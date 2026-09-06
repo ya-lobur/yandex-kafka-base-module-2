@@ -1,0 +1,38 @@
+[project]
+name = "yandex-kafka-base-module-2"
+version = "0.1.0"
+description = "Учебный сервис потоковой фильтрации сообщений с Apache Kafka и Faust"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "faust-streaming>=0.15.3",
+    "typer>=0.27.2",
+]
+
+[project.scripts]
+kafka-app = "kafka_app.cli:main"
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.2",
+    "ruff>=0.16.6",
+]

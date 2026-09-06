@@ -107,6 +107,62 @@ flowchart LR
 Проект использует Python 3.14. Все зависимости и Python-команды запускаются через `uv`; отдельно вызывать `pip` или
 системный интерпретатор не требуется.
 
+## Makefile
+
+Основные команды собраны в `Makefile`. Полный список можно вывести так:
+
+```bash
+make help
+```
+
+Установить зависимости и выполнить проверки качества кода:
+
+```bash
+make install
+make check
+```
+
+Запустить Kafka локально в Docker, а worker — в текущем терминале:
+
+```bash
+make infra-up
+make local-worker
+```
+
+Или собрать и запустить весь стек, включая worker, в Docker Compose:
+
+```bash
+make compose-up
+make logs
+```
+
+Публиковать события можно отдельными командами. По умолчанию используется сценарий из README (`alice`, `bob`,
+`kafka`), параметры переопределяются переменными Make:
+
+```bash
+make block-user OWNER_ID=alice BLOCKED_USER_ID=bob
+make ban-word WORD=kafka
+make send-message SENDER_ID=carol RECIPIENT_ID=alice MESSAGE="Kafka полезна"
+```
+
+Если worker запущен в Compose, используйте Docker-варианты:
+
+```bash
+make docker-block-user OWNER_ID=alice BLOCKED_USER_ID=bob
+make docker-ban-word WORD=kafka
+make docker-send-message SENDER_ID=carol RECIPIENT_ID=alice MESSAGE="Kafka полезна"
+```
+
+Готовый демонстрационный сценарий отправляет блокировку, запрещённое слово и три сообщения; результат читается так:
+
+```bash
+make scenario-docker
+make consume-filtered MAX_MESSAGES=2
+```
+
+Для локального worker-а вместо `scenario-docker` используйте `scenario-local`. Управление стеком: `make ps`,
+`make restart`, `make compose-down`, а для полного сброса Kafka volumes — `make compose-clean`.
+
 ## Установка зависимостей и качество кода
 
 ```bash

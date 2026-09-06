@@ -109,6 +109,7 @@ services:
     environment:
       KAFKA_CLUSTERS_0_NAME: kraft-three-brokers
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      KAFKA_CLUSTERS_0_KSQLDBSERVER: http://ksqldb-server:8088
 
   kafka-init:
     image: confluentinc/cp-kafka:8.3.0
@@ -127,11 +128,51 @@ services:
         kafka-topics --bootstrap-server kafka-1:9092 --create --if-not-exists --topic filtered_messages --partitions 3 --replication-factor 3
         kafka-topics --bootstrap-server kafka-1:9092 --create --if-not-exists --topic blocked_users --partitions 3 --replication-factor 3
         kafka-topics --bootstrap-server kafka-1:9092 --create --if-not-exists --topic banned_words --partitions 1 --replication-factor 3
+        kafka-topics --bootstrap-server kafka-1:9092 --create --if-not-exists --topic user_statistics --partitions 3 --replication-factor 3
         kafka-topics --bootstrap-server kafka-1:9092 --describe --topic messages
         kafka-topics --bootstrap-server kafka-1:9092 --describe --topic filtered_messages
         kafka-topics --bootstrap-server kafka-1:9092 --describe --topic blocked_users
         kafka-topics --bootstrap-server kafka-1:9092 --describe --topic banned_words
+        kafka-topics --bootstrap-server kafka-1:9092 --describe --topic user_statistics
     restart: "no"
+
+  ksqldb-server:
+    image: confluentinc/cp-ksqldb-server:8.3.1
+    hostname: ksqldb-server
+    depends_on:
+      kafka-1:
+        condition: service_healthy
+      kafka-2:
+        condition: service_healthy
+      kafka-3:
+        condition: service_healthy
+    ports:
+      - "8088:8088"
+    environment:
+      KSQL_HOST_NAME: ksqldb-server
+      KSQL_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      KSQL_LISTENERS: http://0.0.0.0:8088
+      KSQL_KSQL_SERVICE_ID: course_ksql_
+      KSQL_KSQL_STREAMS_REPLICATION_FACTOR: 3
+      KSQL_KSQL_INTERNAL_TOPIC_REPLICAS: 3
+      KSQL_KSQL_SINK_REPLICAS: 3
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec '</dev/tcp/127.0.0.1/8088'"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+
+  ksqldb-cli:
+    image: confluentinc/cp-ksqldb-server:8.3.1
+    depends_on:
+      ksqldb-server:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./ksqldb:/opt/ksqldb:ro
 
   stream-processor:
     build:

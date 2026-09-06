@@ -4,6 +4,10 @@ COMPOSE ?= docker compose
 UV ?= uv
 APP_SERVICE ?= stream-processor
 BROKER_SERVICE ?= kafka-1
+KSQL_SERVER_SERVICE ?= ksqldb-server
+KSQL_CLI_SERVICE ?= ksqldb-cli
+KSQL_CLI ?= ksql
+KSQL_SERVER_URL ?= http://ksqldb-server:8088
 
 LOG_LEVEL ?= INFO
 MAX_MESSAGES ?= 2
@@ -22,6 +26,7 @@ MESSAGE ?= Kafka полезна
 	pre-commit-install \
 	infra-up init compose-up up compose-down down compose-clean clean \
 	ps logs restart broker-check topics local-worker worker \
+	ksql-up ksql-apply ksql-shell ksql-status consume-user-statistics \
 	block-user unblock-user ban-word allow-word send-message \
 	docker-block-user docker-unblock-user docker-ban-word docker-allow-word docker-send-message \
 	consume-filtered scenario-local scenario-docker
@@ -87,6 +92,22 @@ topics: ## Описать прикладные Kafka-топики
 	$(COMPOSE) exec $(BROKER_SERVICE) kafka-topics --bootstrap-server $(BROKER_SERVICE):9092 --describe --topic filtered_messages
 	$(COMPOSE) exec $(BROKER_SERVICE) kafka-topics --bootstrap-server $(BROKER_SERVICE):9092 --describe --topic blocked_users
 	$(COMPOSE) exec $(BROKER_SERVICE) kafka-topics --bootstrap-server $(BROKER_SERVICE):9092 --describe --topic banned_words
+	$(COMPOSE) exec $(BROKER_SERVICE) kafka-topics --bootstrap-server $(BROKER_SERVICE):9092 --describe --topic user_statistics
+
+ksql-up: infra-up ## Запустить ksqlDB Server и CLI поверх Kafka
+	$(COMPOSE) up -d $(KSQL_SERVER_SERVICE) $(KSQL_CLI_SERVICE)
+
+ksql-apply: ## Применить persistent queries из ksqldb/ksqldb-queries.sql
+	$(COMPOSE) exec -T $(KSQL_CLI_SERVICE) $(KSQL_CLI) \
+		--file /opt/ksqldb/ksqldb-queries.sql -- $(KSQL_SERVER_URL)
+
+ksql-shell: ## Открыть интерактивный ksqlDB CLI
+	$(COMPOSE) exec $(KSQL_CLI_SERVICE) $(KSQL_CLI) $(KSQL_SERVER_URL)
+
+ksql-status: ## Показать потоки, таблицы и persistent queries ksqlDB
+	$(COMPOSE) exec -T $(KSQL_CLI_SERVICE) $(KSQL_CLI) --execute "SHOW STREAMS;" -- $(KSQL_SERVER_URL)
+	$(COMPOSE) exec -T $(KSQL_CLI_SERVICE) $(KSQL_CLI) --execute "SHOW TABLES;" -- $(KSQL_SERVER_URL)
+	$(COMPOSE) exec -T $(KSQL_CLI_SERVICE) $(KSQL_CLI) --execute "SHOW QUERIES;" -- $(KSQL_SERVER_URL)
 
 local-worker: ## Запустить Faust worker локально через uv
 	$(UV) run kafka-app worker --log-level $(LOG_LEVEL)
@@ -127,6 +148,15 @@ consume-filtered: ## Прочитать результаты из filtered_messa
 	$(COMPOSE) exec -T $(BROKER_SERVICE) kafka-console-consumer \
 		--bootstrap-server $(BROKER_SERVICE):9092 \
 		--topic filtered_messages \
+		--from-beginning \
+		--max-messages $(MAX_MESSAGES) \
+		--formatter-property print.key=true \
+		--formatter-property 'key.separator= | '
+
+consume-user-statistics: ## Прочитать агрегированную статистику пользователей
+	$(COMPOSE) exec -T $(BROKER_SERVICE) kafka-console-consumer \
+		--bootstrap-server $(BROKER_SERVICE):9092 \
+		--topic user_statistics \
 		--from-beginning \
 		--max-messages $(MAX_MESSAGES) \
 		--formatter-property print.key=true \

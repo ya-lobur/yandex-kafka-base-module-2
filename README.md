@@ -1,6 +1,6 @@
-# Практическая работа 3: потоковая фильтрация сообщений
+# Практическая работа 3: потоковая фильтрация и аналитика сообщений
 
-Учебный проект на Python для [первого задания практической работы](practical_work_3.md) второго модуля курса по Kafka.
+Учебный проект на Python для [практической работы](practical_work_3.md) второго модуля курса по Kafka.
 
 Приложение демонстрирует:
 
@@ -10,7 +10,8 @@
 - глобальный динамически обновляемый список запрещённых слов;
 - маскирование целых слов перед публикацией сообщения получателю;
 - запуск локально через `uv` и целиком в Docker Compose;
-- Typer CLI для запуска worker-а и отправки тестовых событий.
+- Typer CLI для запуска worker-а и отправки тестовых событий;
+- потоковая аналитика входящих сообщений с помощью ksqlDB.
 
 Автотесты в проект не добавлены по условию работы. Ниже приведён воспроизводимый ручной сценарий проверки.
 
@@ -84,6 +85,8 @@ flowchart LR
 ├── pyproject.toml
 ├── uv.lock
 ├── .pre-commit-config.yaml
+├── ksqldb/
+│   └── ksqldb-queries.sql
 └── src/
     └── kafka_app/
         ├── __init__.py
@@ -95,14 +98,14 @@ flowchart LR
         └── producer.py
 ```
 
-Возможное второе задание с ksqlDB не реализовано. Схема `messages` уже содержит требуемые для него поля. SQL-запросы
-будут добавлены позднее в `ksqldb/ksqldb-queries.sql`, а текущий Compose можно расширить сервисами ksqlDB.
+Каталог `ksqldb/` содержит SQL-запросы второго задания. Они читают исходный топик `messages` и создают materialized
+таблицы с общей статистикой и статистикой по пользователям.
 
 ## Требования
 
 - Docker и Docker Compose v2;
 - `uv`;
-- свободные порты `8080`, `19092`, `29092`, `39092`.
+- свободные порты `8080`, `8088`, `19092`, `29092`, `39092`.
 
 Проект использует Python 3.14. Все зависимости и Python-команды запускаются через `uv`; отдельно вызывать `pip` или
 системный интерпретатор не требуется.
@@ -163,6 +166,18 @@ make consume-filtered MAX_MESSAGES=2
 Для локального worker-а вместо `scenario-docker` используйте `scenario-local`. Управление стеком: `make ps`,
 `make restart`, `make compose-down`, а для полного сброса Kafka volumes — `make compose-clean`.
 
+Для второго задания используйте ksqlDB-команды:
+
+```bash
+make ksql-up
+make ksql-apply
+make ksql-status
+make ksql-shell
+```
+
+`make ksql-apply` выполняется один раз для текущего состояния Kafka. При необходимости пересоздать потоки и таблицы с
+нуля используйте `make compose-clean`, затем снова запустите стек и примените SQL-файл.
+
 ## Установка зависимостей и качество кода
 
 ```bash
@@ -195,8 +210,9 @@ uv run kafka-app ban-word --help
 
 ## Kafka-кластер
 
-[Docker Compose](docker-compose.yml) разворачивает три брокера Kafka в режиме KRaft и Kafka UI. Каждый узел выполняет
-роли broker и controller. Конфигурация предназначена для локального обучения: listeners используют `PLAINTEXT`.
+[Docker Compose](docker-compose.yml) разворачивает три брокера Kafka в режиме KRaft, Kafka UI и ksqlDB Server с CLI.
+Каждый узел Kafka выполняет роли broker и controller. Конфигурация предназначена для локального обучения: listeners
+используют `PLAINTEXT`.
 
 Запустить только Kafka, UI и создать прикладные топики:
 
@@ -234,6 +250,7 @@ docker compose exec kafka-1 kafka-broker-api-versions \
 | `filtered_messages` | 3        | Разрешённые сообщения после цензуры              |
 | `blocked_users`     | 3        | Команды изменения блокировок                     |
 | `banned_words`      | 1        | Команды изменения небольшого глобального словаря |
+| `user_statistics`   | 3        | Статистика сообщений по пользователям            |
 
 Replication factor всех топиков равен `3`. Одинаковые три партиции `messages`, `blocked_users` и changelog таблицы
 блокировок обеспечивают совместное партиционирование по получателю. Для `GlobalTable` словаря используется одна партиция
@@ -242,7 +259,7 @@ Replication factor всех топиков равен `3`. Одинаковые 
 Описать прикладные топики:
 
 ```bash
-for topic in messages filtered_messages blocked_users banned_words; do
+for topic in messages filtered_messages blocked_users banned_words user_statistics; do
   docker compose exec kafka-1 kafka-topics \
     --bootstrap-server kafka-1:9092 \
     --describe \
@@ -267,7 +284,8 @@ docker compose up -d --build
 docker compose ps --all
 ```
 
-Одноразовый контейнер `kafka-init` должен завершиться с кодом `0`, а `stream-processor` — остаться запущенным.
+Одноразовый контейнер `kafka-init` должен завершиться с кодом `0`, а `stream-processor` и `ksqldb-server` — остаться
+запущенными. ksqlDB Server доступен по адресу <http://localhost:8088>, Kafka UI — по адресу <http://localhost:8080>.
 
 Логи обработки:
 
@@ -286,6 +304,92 @@ docker compose exec stream-processor uv run --frozen --no-dev --no-sync kafka-ap
 ```
 
 Compose подставит внутренние адреса брокеров через `KAFKA_BROKERS`.
+
+## Аналитика ksqlDB (второе задание)
+
+ksqlDB читает исходные JSON-сообщения из `messages`. Faust-фильтрация и ksqlDB-аналитика работают независимо: статистика
+считает все входящие сообщения, включая те, которые Faust впоследствии заблокировала.
+
+Запустить Kafka, ksqlDB Server и CLI без Faust worker-а:
+
+```bash
+make ksql-up
+```
+
+Или запустить полный стек:
+
+```bash
+make compose-up
+```
+
+Применить поток и таблицы из `ksqldb/ksqldb-queries.sql`:
+
+```bash
+make ksql-apply
+make ksql-status
+```
+
+SQL-файл создаёт следующие объекты:
+
+| Объект              | Назначение                                                             |
+|---------------------|------------------------------------------------------------------------|
+| `messages_stream`   | Исходный поток полей `user_id`, `recipient_id`, `message`, `timestamp` |
+| `total_messages`    | Общее количество входящих сообщений                                    |
+| `unique_recipients` | Количество уникальных получателей                                      |
+| `user_statistics`   | Количество сообщений и уникальных получателей для каждого `user_id`    |
+
+Открыть интерактивную консоль можно командой:
+
+```bash
+make ksql-shell
+```
+
+Для отправки тестовых сообщений должен быть запущен `stream-processor`, поэтому перед тестом используйте полный стек
+через `make compose-up` (если он ещё не запущен). После применения SQL отправить пять сообщений через Faust CLI внутри
+контейнера:
+
+```bash
+make docker-send-message SENDER_ID=alice RECIPIENT_ID=bob MESSAGE="Первое сообщение"
+make docker-send-message SENDER_ID=alice RECIPIENT_ID=carol MESSAGE="Второе сообщение"
+make docker-send-message SENDER_ID=alice RECIPIENT_ID=bob MESSAGE="Третье сообщение"
+make docker-send-message SENDER_ID=bob RECIPIENT_ID=alice MESSAGE="Ответ"
+make docker-send-message SENDER_ID=carol RECIPIENT_ID=bob MESSAGE="Привет"
+```
+
+Проверить результаты в `make ksql-shell`:
+
+```sql
+SELECT *
+FROM total_messages EMIT CHANGES;
+SELECT *
+FROM unique_recipients EMIT CHANGES;
+SELECT *
+FROM user_statistics EMIT CHANGES;
+```
+
+Для materialized-таблицы конкретного пользователя можно выполнить pull query:
+
+```sql
+SELECT *
+FROM user_statistics
+WHERE user_id = 'alice';
+```
+
+Ожидаемые значения после пяти сообщений:
+
+- `total_messages` для `scope = 'all'`: `5`;
+- `unique_recipients` для `scope = 'all'`: `3` (`alice`, `bob`, `carol`);
+- `alice`: 3 отправленных сообщения, 2 уникальных получателя;
+- `bob`: 1 отправленное сообщение, 1 уникальный получатель;
+- `carol`: 1 отправленное сообщение, 1 уникальный получатель.
+
+Прочитать результат из Kafka-топика `user_statistics`:
+
+```bash
+make consume-user-statistics MAX_MESSAGES=10
+```
+
+Состояние ksqlDB также можно посмотреть в Kafka UI через подключённый сервер `ksqldb-server`.
 
 ## Запуск worker-а локально через uv
 
@@ -430,6 +534,13 @@ docker compose logs -f stream-processor
 Агент `update_banned_words` обновляет `banned-words` GlobalTable. Каждый worker получает полный небольшой словарь. Перед
 отправкой разрешённого сообщения агент строит список активных слов и маскирует целые совпадения без учёта регистра.
 Результат с исходными `user_id`, `recipient_id` и `timestamp` записывается в `filtered_messages`.
+
+### Аналитика ksqlDB
+
+`messages_stream` регистрирует JSON-топик `messages` как поток ksqlDB. Persistent queries поддерживают общее количество
+сообщений, количество уникальных получателей и таблицу `user_statistics`, которая сохраняется в одноимённом
+Kafka-топике. Агрегация по `user_id` выполняет необходимое repartitioning и использует `user_id` как ключ результирующей
+таблицы.
 
 ## Очистка
 
